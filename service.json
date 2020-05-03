@@ -1,0 +1,55 @@
+{
+  "Name": "SERVICE",
+  "TaskTemplate": {
+    "ContainerSpec": {
+      "Image": "REGISTRY/IMAGE:TAG",
+      "Secrets": [
+        {
+          "File": {
+            "Name": "/run/secrets/integration_ssl_cert",
+            "UID": "0",
+            "GID": "0",
+            "Mode": 644
+          },
+          "SecretID": "SSLCERT",
+          "SecretName": "integration_ssl_cert"
+        },
+        {
+          "File": {
+            "Name": "/run/secrets/integration_ssl_key",
+            "UID": "0",
+            "GID": "0",
+            "Mode": 644
+          },
+          "SecretID": "SSLKEY",
+          "SecretName": "integration_ssl_key"
+        }
+      ]
+    },
+    "RestartPolicy": {
+      "Condition": "any",
+      "Delay": 10000,
+      "MaxAttempts": 5
+    }
+  },
+  "Mode": {
+    "Replicated": {
+      "Replicas": REPS
+    }
+  },
+  "UpdateConfig": {
+    "Parallelism": 1,
+    "Delay": 60000,
+    "FailureAction": "pause",
+    "MaxFailureRatio": 0.5
+  },
+  "EndpointSpec": {
+    "Ports": [
+      {
+        "Protocol": "tcp",
+        "PublishedPort": 5001,
+        "TargetPort": 5001
+      }
+    ]
+  }
+}

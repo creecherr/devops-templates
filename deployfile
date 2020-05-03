@@ -1,0 +1,98 @@
+pipeline {
+  agent {
+    node { label 'cicd' }
+  }
+
+  options {
+    buildDiscarder(logRotator(numToKeepStr: '3')) // only keep the last 3 builds
+  }
+
+  environment {
+    def scmVars = checkout scm
+    IMAGE='image-name'
+    SERVICE='service'
+    REGISTRY='registry-to-pull-image-from'
+  }
+
+  parameters {
+    string(name: 'TAG', defaultValue: '0.0.1', description: 'Version to deploy')
+    string(name: 'COUNT', defaultValue: '2', description: 'Number of replicas')
+    string(name: 'SWARM', defaultValue: '10.41.64.80', description: 'Swarm host to deploy to')
+    choice(name: 'ACTION', choices: 'deploy\ndelete', description: 'What action should be taken')
+    choice(name: 'ENVIR', choices: 'devtest\nuat\nproduction', description: 'Which environment are we targeting?')
+  }
+
+  stages {
+    stage('Update deployment JSON') {
+      environment {
+        SSLCERT=''
+        SSLKEY=''
+      }
+      steps {
+        sh """
+          curl http://${params.SWARM}:2375/v1.35/secrets -o secret_list.json
+          BASEURL=\$(jq -r '.[] | select(.Spec.Name == "base_url") | .ID' secret_list.json)
+         SSLCERT=\$(jq -r '.[] | select(.Spec.Name == "ssl_cert") | .ID' secret_list.json)
+          SSLKEY=\$(jq -r '.[] | select(.Spec.Name == "ssl_key") | .ID' secret_list.json)
+          sed -i "s/SERVICE/${env.SERVICE}/" ${env.SERVICE}.json
+          sed -i "s/REGISTRY/${env.REGISTRY}/" ${env.SERVICE}.json
+          sed -i "s/IMAGE/${env.IMAGE}/" ${env.SERVICE}.json
+          sed -i "s/REPS/${params.COUNT}/" ${env.SERVICE}.json
+          sed -i "s/TAG/${params.TAG}/" ${env.SERVICE}.json
+          sed -i "s/SSLCERT/\$SSLCERT/" ${env.SERVICE}.json
+          sed -i "s/SSLKEY/\$SSLKEY/" ${env.SERVICE}.json
+        """
+      }
+    }
+    stage('Delete service') {
+      when {
+        // Only delete a service if explicitly told to
+        expression { params.ACTION == 'delete' }
+      }
+      environment {
+        svcid=''
+        svcver=''
+      }
+      steps {
+        sh """
+          curl http://${params.SWARM}:2375/v1.35/services -o all_services.json
+          jq -c '[ .[] | select(.Spec.Name | contains("${env.SERVICE}")) ]' all_services.json > service_${env.SERVICE}.json
+          svcid=\$(jq -r '.[].ID' service_${env.SERVICE}.json)
+          curl -X DELETE "http://${params.SWARM}:2375/v1.35/services/\$svcid"
+        """
+      }
+    }
+    stage('Update an existing service') {
+      when {
+        // Only deploy a service if explicitly told to
+        expression { params.ACTION == 'deploy' }
+      }
+      environment {
+        svcid=''
+        svcver=''
+      }
+      steps {
+        withCredentials([string(credentialsId: 'registry-token', variable: 'TOKEN')]) {
+          sh """
+            curl http://${params.SWARM}:2375/v1.35/services -o all_services.json
+            jq -c '[ .[] | select(.Spec.Name | contains("${env.SERVICE}")) ]' all_services.json > service_${env.SERVICE}.json
+            svcid=\$(jq -r '.[].ID' service_${env.SERVICE}.json)
+            svcver=\$(jq -r '.[].Version.Index' service_${env.SERVICE}.json)
+
+            if [[ -n \$svcid ]]; then
+                curl -H "X-Registry-Auth: ${TOKEN}" -d @${env.SERVICE}.json -X POST "http://${params.SWARM}:2375/v1.35/services/\$svcid/update?version=\$svcver"
+              else
+                curl -H "X-Registry-Auth: ${TOKEN}" -d @${env.SERVICE}.json -X POST "http://${params.SWARM}:2375/v1.35/services/create"
+            fi
+          """
+        }
+      }
+    }
+  }
+
+  post {
+    always {
+      cleanWs()
+    }
+  }
+}
